@@ -427,9 +427,20 @@ samp_ssad = function(comm, groups){
   return(comm_out)
 }
 
+# Convert specified columns of a dataframe from factors to numeric
+df_factor_to_numeric = function(dataframe, cols = NULL){
+    if (is.null(cols)) cols = 1:ncol(dataframe)
+    for (col in cols){
+        if ('factor' %in% class(dataframe[, col]))
+            dataframe[, col] = as.numeric(levels(dataframe[, col]))[dataframe[, col]]
+    }
+    return(dataframe)
+}
+
 # Auxillary function for get_delta_stats()
 # Overall checks for input values
-get_delta_overall_checks = function(comm, type, group_var, env_var, density_stat){
+get_delta_overall_checks = function(comm, type, group_var, env_var, 
+                                    density_stat, tests){
     if (!(type %in% c('continuous', 'discrete')))
         stop('Type has to be discrete or continuous.')
     if (!(density_stat %in% c('mean', 'max', 'min')))
@@ -440,40 +451,9 @@ get_delta_overall_checks = function(comm, type, group_var, env_var, density_stat
         if (!(env_var %in% names(comm$env)))
             stop('If env_var is defined, it has to be one of the environmental
                  variables in comm.')
-}
-
-# Auxillary function for get_delta_stats()
-# Checks which tests can be performed
-get_delta_check_tests = function(comm, tests, type, min_plot, group_plots, 
-                                 group_levels, ref_group){
     test_status = sapply(tests, function(x) 
         eval(parse(text = paste('comm$tests$', x, sep = ''))))
     approved_tests = tests[which(test_status == TRUE)]
-    # Additional check for aggregation analysis
-    # NOTE: may not be necessary since we are also looking at within-plot aggregation 
-    if ('agg' %in% approved_tests){
-        if (!is.null(min_plots)){
-            groups_keep = as.character(group_plots[which(group_plots$Freq >= 
-                                                             min_plots), 1])
-        } else {groups_keep = group_levels}
-        agg_keep = FALSE
-        if (type == 'discrete'){
-            if (length(groups_keep) == 1){
-                warning('Test for aggregation cannot be conducted with only one 
-                        group left.')
-            } else if (!(ref_group %in% groups_keep)){
-                warning('Test for aggregation cannot be conducted because the 
-                        reference group has been dropped.')
-            } else {agg_keep = TRUE}
-        } else if (length(groups_keep) < 3){
-            warning('Test for aggregation cannot be conducted in the continuous
-                    case with less than three groups left.')
-        } else {agg_keep = TRUE}
-        
-        if (agg_keep == F)
-            approved_tests = approved_tests[approved_tests != 'agg']
-    }
-    
     if (length(approved_tests) < length(tests)) {
         tests_string = paste(approved_tests, collapse=' and ')
         cat(paste('Based upon the attributes of the community object only the 
@@ -572,6 +552,7 @@ get_sample_curves = function(out, comm, group_levels, approved_tests){
         if ('agg' %in% approved_tests)
             names(out$sample_rare)[4] = 'expl_S'
     }
+    out$sample_rare = df_factor_to_numeric(out$sample_rare, 2:ncol(out$sample_rare))
     return(out)
 }
 
@@ -609,6 +590,7 @@ effect_SAD_continuous = function(out, group_sad, env_levels, nperm){
                                             t(ind_r_null_CI)))
     names(out$continuous$indiv) = c('effort_ind', 'r_emp', 'r_null_low', 
                                     'r_null_median', 'r_null_high')
+    out$continuous$indiv = df_factor_to_numeric(out$continuous$indiv)
     return(out)
 }
 
@@ -648,6 +630,8 @@ effect_SAD_discrete = function(out, group_sad, group_levels, ref_group, nperm){
         out$discrete$indiv = rbind(out$discrete$indiv, ind_level)
     }
     close(pb)
+    out$discrete$indiv = df_factor_to_numeric(out$discrete$indiv, 
+                                              2:ncol(out$discrete$indiv))
     names(out$discrete$indiv) = c('group', 'effort_ind', 'deltaS_emp',
                                   'deltaS_null_low', 'deltaS_null_median',
                                   'deltaS_null_high')
@@ -696,7 +680,9 @@ effect_N_continuous = function(out, comm, S, group_levels, env_levels, group_dat
     N_r_null_CI = apply(null_N_r_mat, 2, function(x) 
         quantile(x, c(0.025, 0.5, 0.975), na.rm = T))
     out$continuous$N = data.frame(cbind(effect_N_by_group[, 1], r_emp, t(N_r_null_CI)))
-    names(out$continuous$N) = c('effort_ind', 'r_emp', 'r_null_low', 'r_null_median', 'r_null_high')
+    out$continuous$N = df_factor_to_numeric(out$continuous$N)
+    names(out$continuous$N) = c('effort_ind', 'r_emp', 'r_null_low', 
+                                'r_null_median', 'r_null_high')
     return(out)
 }
 
@@ -735,11 +721,11 @@ effect_N_discrete = function(out, comm, group_levels, ref_group, groups,
         out$discrete$N = rbind(out$discrete$N, N_level)
     }
     close(pb)
+    out$discrete$N = df_factor_to_numeric(out$discrete$N, 2:ncol(out$discrete$N))
     names(out$discrete$N) = c('group', 'effort_sample', 'ddeltaS_emp', 'ddeltaS_null_low', 
                               'ddeltaS_null_median', 'ddeltaS_null_high')
     return(out)
 }
-
 
 #' Conduct the MOBR tests on drivers of biodiversity across scales.
 #' 
@@ -818,7 +804,8 @@ get_delta_stats = function(comm, group_var, env_var = NULL, ref_group = NULL,
                            min_plots = NULL, density_stat ='mean',
                            corr='spearman', nperm=1000) {
     
-    get_delta_overall_checks(comm, type, group_var, env_var, density_stat)
+    approved_tests = get_delta_overall_checks(comm, type, group_var, env_var, 
+                                              density_stat, tests)
     
     S = ncol(comm$comm)
     plot_abd = rowSums(comm$comm)
@@ -839,9 +826,7 @@ get_delta_stats = function(comm, group_var, env_var = NULL, ref_group = NULL,
     group_sad = group_sad[, -1]
     ind_sample_size = get_delta_ind_sample(group_sad, inds, log_scale)
     plot_dens = get_plot_dens(comm$comm, density_stat)
-    approved_tests = get_delta_check_tests(comm, tests, type, min_plots, 
-                                           group_plots, group_levels, ref_group)
-    
+
     out = list()  
     out$type = type
     out$log_scale = log_scale
